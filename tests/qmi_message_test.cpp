@@ -32,7 +32,7 @@ int main() {
     // CTL uses an 8-bit transaction identifier.
     const auto ctl = j5qmi::encode_qmi_message(
         0x00, 0x00, 0x42, 0x0021, {});
-    assert(ctl.size() == 5U);
+    assert(ctl.size() == 6U);
 
     const auto ctl_parsed = j5qmi::parse_qmi_message(
         0x00, ctl.data(), ctl.size());
