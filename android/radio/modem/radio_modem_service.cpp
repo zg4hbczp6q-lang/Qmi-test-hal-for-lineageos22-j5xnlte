@@ -1,6 +1,10 @@
+
 #include "radio_modem_service.h"
 
 #include <android-base/logging.h>
+
+#include <optional>
+#include <string>
 
 namespace aidl::android::hardware::radio::modem {
 
@@ -154,8 +158,27 @@ ndk::ScopedAStatus RadioModemService::getImei(int serial) {
     auto response = getResponse();
     if (!response) return ndk::ScopedAStatus::ok();
 
+    std::string imei;
+    const bool success = backend_.getImei(&imei);
+
+    if (!success) {
+        LOG(ERROR) << "Failed to retrieve IMEI from AT interface";
+
+        response->getImeiResponse(
+            makeResponseInfo(serial, RadioError::RADIO_NOT_AVAILABLE),
+            std::nullopt);
+
+        return ndk::ScopedAStatus::ok();
+    }
+
+    ImeiInfo info{};
+    info.type = ImeiInfo::ImeiType::PRIMARY;
+    info.imei = imei;
+    info.svn = "";
+
     response->getImeiResponse(
-        makeResponseInfo(serial, RadioError::REQUEST_NOT_SUPPORTED), nullptr);
+        makeResponseInfo(serial, RadioError::NONE),
+        std::optional<ImeiInfo>{info});
 
     return ndk::ScopedAStatus::ok();
 }
