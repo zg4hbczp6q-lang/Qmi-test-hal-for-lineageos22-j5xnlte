@@ -13,6 +13,7 @@ namespace j5qmi {
 class QmiModemBackend {
 public:
     static constexpr const char* kQmiDevice = "/dev/wwan0qmi0";
+    static constexpr const char* kAtDevice = "/dev/wwan0at0";
 
     QmiModemBackend();
     ~QmiModemBackend();
@@ -26,12 +27,15 @@ public:
     bool isConnected() const;
 
     bool getBasebandVersion(std::string* version);
+    bool getImei(std::string* imei);
 
     bool setRadioPower(bool enabled);
 
 private:
     bool openDeviceLocked();
     void closeDeviceLocked();
+
+    bool getImeiFromAtLocked(std::string* imei);
 
     mutable std::mutex mutex_;
 
