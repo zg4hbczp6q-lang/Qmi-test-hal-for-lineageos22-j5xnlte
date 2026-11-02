@@ -1,26 +1,65 @@
+
 #include "qmi_modem_backend.h"
 
-#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <vector>
 
+#include "j5qmi/qmi_frame.h"
 #include "j5qmi/qmi_message.h"
 
 namespace j5qmi {
-
 namespace {
 
-constexpr uint16_t QMI_DMS_GET_REVISION_ID = 0x0021;
-constexpr uint16_t QMI_DMS_SET_OPERATING_MODE = 0x002E;
+constexpr uint16_t kDmsGetRevisionId = 0x0021;
+constexpr uint16_t kDmsSetOperatingMode = 0x002E;
 
-constexpr uint8_t QMI_RESULT_TLV = 0x02;
-constexpr uint8_t QMI_REVISION_TLV = 0x01;
-constexpr uint8_t QMI_OPERATING_MODE_TLV = 0x01;
+constexpr uint8_t kDmsRevisionTlv = 0x01;
+constexpr uint8_t kDmsOperatingModeTlv = 0x01;
 
-constexpr uint8_t QMI_MODE_ONLINE = 0x00;
-constexpr uint8_t QMI_MODE_OFFLINE = 0x03;
+constexpr uint8_t kDmsModeOnline = 0x00;
+constexpr uint8_t kDmsModeOffline = 0x03;
+
+constexpr int kQmiTimeoutMs = 3000;
+
+bool parse_dms_response(const TransportResult& transport_result,
+                        uint8_t client_id,
+                        uint16_t expected_message_id,
+                        QmiMessage* message) {
+    if (!transport_result || message == nullptr) {
+        return false;
+    }
+
+    const ParseResult frame = parse_qmux(
+        transport_result.frame.data(),
+        transport_result.frame.size());
+
+    if (!frame ||
+        frame.frame.service != 0x02 ||
+        frame.frame.client_id != client_id) {
+        return false;
+    }
+
+    const MessageResult parsed = parse_qmi_message(
+        0x02,
+        frame.frame.qmi_message.data(),
+        frame.frame.qmi_message.size());
+
+    if (!parsed || parsed.message.message_id != expected_message_id) {
+        return false;
+    }
+
+    *message = parsed.message;
+    return true;
+}
+
+bool qmi_result_success(const QmiMessage& message) {
+    uint16_t result = 0;
+    uint16_t error = 0;
+
+    return decode_result_tlv(message, &result, &error) && result == 0;
+}
 
 } // namespace
 
@@ -36,7 +75,6 @@ bool QmiModemBackend::openDeviceLocked() {
     }
 
     fd_ = open(kQmiDevice, O_RDWR | O_CLOEXEC | O_NONBLOCK);
-
     if (fd_ < 0) {
         return false;
     }
@@ -44,9 +82,9 @@ bool QmiModemBackend::openDeviceLocked() {
     transport_ = std::make_unique<QmiTransport>(fd_);
     clients_ = std::make_unique<QmiClientManager>(*transport_);
 
-    const QmiClientResult result = clients_->acquire(kDmsService);
+    const QmiClientResult client = clients_->acquire(kDmsService);
 
-    if (!result.success) {
+    if (!client.success || client.client_id == 0) {
         clients_.reset();
         transport_.reset();
         close(fd_);
@@ -100,53 +138,49 @@ bool QmiModemBackend::getBasebandVersion(std::string* version) {
         return false;
     }
 
-    const uint8_t client = clients_->client_id(kDmsService);
+    const uint8_t client_id = clients_->client_id(kDmsService);
+    if (client_id == 0) {
+        return false;
+    }
 
-    const auto request = encode_qmi_message(
+    constexpr uint16_t transaction_id = 1;
+
+    const std::vector<uint8_t> qmi_message = encode_qmi_message(
         kDmsService,
         0x00,
-        1,
-        QMI_DMS_GET_REVISION_ID,
-        {}
-    );
+        transaction_id,
+        kDmsGetRevisionId,
+        {});
 
-    const auto frame = encode_qmi_frame(
+    const std::vector<uint8_t> request = encode_qmux(
+        0x00,
         kDmsService,
-        client,
-        1,
-        request
-    );
+        client_id,
+        qmi_message);
 
-    const TransportResult result = transport_->transact(
-        frame,
-        kDmsService,
-        client,
-        1,
-        3000
-    );
-
-    if (!result.success) {
+    if (request.empty()) {
         return false;
     }
 
-    const QmiMessage response = parse_qmi_message(
+    const TransportResult response = transport_->transact(
+        request,
         kDmsService,
-        result.payload.data(),
-        result.payload.size()
-    );
+        client_id,
+        transaction_id,
+        kQmiTimeoutMs);
 
-    uint16_t qmi_result = 0;
-    uint16_t qmi_error = 0;
+    QmiMessage message{};
 
-    if (!decode_result_tlv(response, &qmi_result, &qmi_error)) {
+    if (!parse_dms_response(
+            response,
+            client_id,
+            kDmsGetRevisionId,
+            &message) ||
+        !qmi_result_success(message)) {
         return false;
     }
 
-    if (qmi_result != 0) {
-        return false;
-    }
-
-    const Tlv* revision = find_tlv(response, QMI_REVISION_TLV);
+    const Tlv* revision = find_tlv(message, kDmsRevisionTlv);
 
     if (revision == nullptr || revision->value.empty()) {
         return false;
@@ -154,10 +188,13 @@ bool QmiModemBackend::getBasebandVersion(std::string* version) {
 
     version->assign(
         revision->value.begin(),
-        revision->value.end()
-    );
+        revision->value.end());
 
-    return true;
+    if (!version->empty() && version->back() == '\0') {
+        version->pop_back();
+    }
+
+    return !version->empty();
 }
 
 bool QmiModemBackend::setRadioPower(bool enabled) {
@@ -167,55 +204,50 @@ bool QmiModemBackend::setRadioPower(bool enabled) {
         return false;
     }
 
-    const uint8_t client = clients_->client_id(kDmsService);
+    const uint8_t client_id = clients_->client_id(kDmsService);
+    if (client_id == 0) {
+        return false;
+    }
 
-    Tlv operating_mode;
-    operating_mode.type = QMI_OPERATING_MODE_TLV;
-    operating_mode.value = {
-        enabled ? QMI_MODE_ONLINE : QMI_MODE_OFFLINE
+    constexpr uint16_t transaction_id = 2;
+
+    const Tlv operating_mode{
+        kDmsOperatingModeTlv,
+        {enabled ? kDmsModeOnline : kDmsModeOffline}
     };
 
-    const auto request = encode_qmi_message(
+    const std::vector<uint8_t> qmi_message = encode_qmi_message(
         kDmsService,
         0x00,
-        2,
-        QMI_DMS_SET_OPERATING_MODE,
-        {operating_mode}
-    );
+        transaction_id,
+        kDmsSetOperatingMode,
+        {operating_mode});
 
-    const auto frame = encode_qmi_frame(
+    const std::vector<uint8_t> request = encode_qmux(
+        0x00,
         kDmsService,
-        client,
-        2,
-        request
-    );
+        client_id,
+        qmi_message);
 
-    const TransportResult result = transport_->transact(
-        frame,
-        kDmsService,
-        client,
-        2,
-        5000
-    );
-
-    if (!result.success) {
+    if (request.empty()) {
         return false;
     }
 
-    const QmiMessage response = parse_qmi_message(
+    const TransportResult response = transport_->transact(
+        request,
         kDmsService,
-        result.payload.data(),
-        result.payload.size()
-    );
+        client_id,
+        transaction_id,
+        5000);
 
-    uint16_t qmi_result = 0;
-    uint16_t qmi_error = 0;
+    QmiMessage message{};
 
-    if (!decode_result_tlv(response, &qmi_result, &qmi_error)) {
-        return false;
-    }
-
-    return qmi_result == 0;
+    return parse_dms_response(
+               response,
+               client_id,
+               kDmsSetOperatingMode,
+               &message) &&
+           qmi_result_success(message);
 }
 
 } // namespace j5qmi
