@@ -1,13 +1,16 @@
 
 cmake_minimum_required(VERSION 3.22)
-project(j5xnlte_qmi_radio_core VERSION 0.3.0 LANGUAGES CXX)
+
+project(j5xnlte_qmi_radio_core VERSION 0.4.0 LANGUAGES CXX)
 
 option(QMI_BUILD_TESTS "Build host-side protocol and transport tests" ON)
 
+# QMI core library
 add_library(j5qmi_core STATIC
     src/qmi_frame.cpp
     src/qmi_message.cpp
     src/qmi_transport.cpp
+    src/qmi_client_manager.cpp
 )
 
 target_include_directories(j5qmi_core
@@ -30,6 +33,7 @@ set_target_properties(j5qmi_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# Host-side tests
 if(QMI_BUILD_TESTS)
     enable_testing()
 
@@ -50,4 +54,10 @@ if(QMI_BUILD_TESTS)
     )
     target_link_libraries(qmi_transport_test PRIVATE j5qmi_core)
     add_test(NAME qmi_transport_test COMMAND qmi_transport_test)
+
+    add_executable(qmi_client_manager_test
+        tests/qmi_client_manager_test.cpp
+    )
+    target_link_libraries(qmi_client_manager_test PRIVATE j5qmi_core)
+    add_test(NAME qmi_client_manager_test COMMAND qmi_client_manager_test)
 endif()
