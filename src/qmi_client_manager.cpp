@@ -15,7 +15,7 @@ constexpr uint16_t kCtlGetClientId = 0x0022;
 constexpr uint16_t kCtlReleaseClientId = 0x0023;
 
 constexpr uint8_t kCtlClientIdTlv = 0x01;
-constexpr uint8_t kQmiResultTlv = 0x02;
+
 
 }  // namespace
 
