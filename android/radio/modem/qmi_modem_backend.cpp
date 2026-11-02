@@ -1,9 +1,13 @@
-
 #include "qmi_modem_backend.h"
 
+#include <cerrno>
+#include <chrono>
+#include <cctype>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 
+#include <string>
 #include <vector>
 
 #include "j5qmi/qmi_frame.h"
@@ -22,6 +26,7 @@ constexpr uint8_t kDmsModeOnline = 0x00;
 constexpr uint8_t kDmsModeOffline = 0x03;
 
 constexpr int kQmiTimeoutMs = 3000;
+constexpr int kAtTimeoutMs = 3000;
 
 bool parse_dms_response(const TransportResult& transport_result,
                         uint8_t client_id,
@@ -59,6 +64,30 @@ bool qmi_result_success(const QmiMessage& message) {
     uint16_t error = 0;
 
     return decode_result_tlv(message, &result, &error) && result == 0;
+}
+
+bool is_imei_line(const std::string& line) {
+    if (line.size() != 15) {
+        return false;
+    }
+
+    for (const unsigned char ch : line) {
+        if (!std::isdigit(ch)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string trim_line(const std::string& line) {
+    const size_t first = line.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+
+    const size_t last = line.find_last_not_of(" \t\r\n");
+    return line.substr(first, last - first + 1);
 }
 
 } // namespace
@@ -195,6 +224,149 @@ bool QmiModemBackend::getBasebandVersion(std::string* version) {
     }
 
     return !version->empty();
+}
+
+bool QmiModemBackend::getImeiFromAtLocked(std::string* imei) {
+    if (imei == nullptr) {
+        return false;
+    }
+
+    const int at_fd = open(
+        kAtDevice,
+        O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
+
+    if (at_fd < 0) {
+        return false;
+    }
+
+    bool success = false;
+    std::string received;
+
+    const char command[] = "AT+CGSN\r";
+    size_t written = 0;
+
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(kAtTimeoutMs);
+
+    while (written < sizeof(command) - 1) {
+        const ssize_t count = write(
+            at_fd,
+            command + written,
+            sizeof(command) - 1 - written);
+
+        if (count > 0) {
+            written += static_cast<size_t>(count);
+            continue;
+        }
+
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            pollfd pfd{at_fd, POLLOUT, 0};
+            if (poll(&pfd, 1, 250) > 0 && (pfd.revents & POLLOUT)) {
+                continue;
+            }
+        }
+
+        close(at_fd);
+        return false;
+    }
+
+    char buffer[128];
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+
+        pollfd pfd{at_fd, POLLIN, 0};
+        const int poll_result = poll(
+            &pfd,
+            1,
+            static_cast<int>(remaining));
+
+        if (poll_result < 0 && errno == EINTR) {
+            continue;
+        }
+
+        if (poll_result <= 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            break;
+        }
+
+        if (!(pfd.revents & POLLIN)) {
+            continue;
+        }
+
+        const ssize_t count = read(at_fd, buffer, sizeof(buffer));
+
+        if (count < 0 && (errno == EINTR ||
+                          errno == EAGAIN ||
+                          errno == EWOULDBLOCK)) {
+            continue;
+        }
+
+        if (count <= 0) {
+            break;
+        }
+
+        received.append(buffer, static_cast<size_t>(count));
+
+        if (received.size() > 1024) {
+            break;
+        }
+
+        size_t line_start = 0;
+
+        while (line_start < received.size()) {
+            const size_t line_end = received.find('\n', line_start);
+            if (line_end == std::string::npos) {
+                break;
+            }
+
+            const std::string line = trim_line(
+                received.substr(line_start, line_end - line_start));
+
+            if (is_imei_line(line)) {
+                *imei = line;
+            }
+
+            if (line == "OK") {
+                success = is_imei_line(*imei);
+                close(at_fd);
+                return success;
+            }
+
+            if (line == "ERROR" || line == "+CME ERROR" ||
+                line.compare(0, 10, "+CME ERROR") == 0) {
+                close(at_fd);
+                return false;
+            }
+
+            line_start = line_end + 1;
+        }
+    }
+
+    close(at_fd);
+
+    if (!success) {
+        imei->clear();
+    }
+
+    return success;
+}
+
+bool QmiModemBackend::getImei(std::string* imei) {
+    if (imei == nullptr) {
+        return false;
+    }
+
+    imei->clear();
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return getImeiFromAtLocked(imei);
 }
 
 bool QmiModemBackend::setRadioPower(bool enabled) {
