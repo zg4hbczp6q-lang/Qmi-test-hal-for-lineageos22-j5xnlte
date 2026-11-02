@@ -1,49 +1,53 @@
 cc_library_static {
     name: "libj5qmi_core",
     vendor: true,
-
     srcs: [
         "src/qmi_frame.cpp",
         "src/qmi_message.cpp",
         "src/qmi_transport.cpp",
         "src/qmi_client_manager.cpp",
     ],
-
-    export_include_dirs: [
-        "include",
-    ],
-
+    export_include_dirs: ["include"],
     cpp_std: "c++17",
-
-    cflags: [
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-    ],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
 }
 
 cc_library_static {
     name: "libj5qmi_modem",
     vendor: true,
-
-    srcs: [
-        "android/radio/modem/qmi_modem_backend.cpp",
-    ],
-
+    srcs: ["android/radio/modem/qmi_modem_backend.cpp"],
     export_include_dirs: [
         "include",
         "android/radio/modem",
     ],
+    static_libs: ["libj5qmi_core"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+}
+
+cc_binary {
+    name: "android.hardware.radio-service.j5qmi",
+    vendor: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "android/radio/modem/radio_modem_service.cpp",
+        "android/radio/modem/radio_modem_main.cpp",
+    ],
 
     static_libs: [
+        "libj5qmi_modem",
         "libj5qmi_core",
     ],
 
-    cpp_std: "c++17",
-
-    cflags: [
-        "-Wall",
-        "-Wextra",
-        "-Werror",
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "android.hardware.radio-V2-ndk",
     ],
+
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+    init_rc: ["android/radio/modem/android.hardware.radio-service.j5qmi.rc"],
+    vintf_fragments: ["android/radio/modem/android.hardware.radio-service.j5qmi.xml"],
 }
