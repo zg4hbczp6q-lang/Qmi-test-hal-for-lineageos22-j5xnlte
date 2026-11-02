@@ -1,0 +1,49 @@
+cc_library_static {
+    name: "libj5qmi_core",
+    vendor: true,
+
+    srcs: [
+        "src/qmi_frame.cpp",
+        "src/qmi_message.cpp",
+        "src/qmi_transport.cpp",
+        "src/qmi_client_manager.cpp",
+    ],
+
+    export_include_dirs: [
+        "include",
+    ],
+
+    cpp_std: "c++17",
+
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}
+
+cc_library_static {
+    name: "libj5qmi_modem",
+    vendor: true,
+
+    srcs: [
+        "android/radio/modem/qmi_modem_backend.cpp",
+    ],
+
+    export_include_dirs: [
+        "include",
+        "android/radio/modem",
+    ],
+
+    static_libs: [
+        "libj5qmi_core",
+    ],
+
+    cpp_std: "c++17",
+
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}
